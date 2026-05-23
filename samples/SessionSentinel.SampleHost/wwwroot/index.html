@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Session Sentinel Sample Host</title>
+  <style>
+    :root {
+      --bg: #f4efe7;
+      --panel: #fffaf2;
+      --ink: #1d1a17;
+      --muted: #6a6259;
+      --line: #d8cdbf;
+      --accent: #b24a2f;
+      --accent-strong: #8d341d;
+      --ok: #226f54;
+      --warn: #8a5a00;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: "Segoe UI", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top left, rgba(178, 74, 47, 0.12), transparent 28%),
+        radial-gradient(circle at bottom right, rgba(34, 111, 84, 0.12), transparent 30%),
+        var(--bg);
+    }
+
+    .shell {
+      max-width: 1080px;
+      margin: 0 auto;
+      padding: 32px 20px 56px;
+    }
+
+    .hero {
+      display: grid;
+      gap: 14px;
+      margin-bottom: 24px;
+    }
+
+    .hero h1 {
+      margin: 0;
+      font-size: clamp(32px, 5vw, 52px);
+      line-height: 0.95;
+      letter-spacing: -0.04em;
+    }
+
+    .hero p {
+      max-width: 720px;
+      margin: 0;
+      color: var(--muted);
+      font-size: 16px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 18px;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      padding: 18px;
+      box-shadow: 0 14px 40px rgba(0, 0, 0, 0.05);
+    }
+
+    .card h2 {
+      margin: 0 0 14px;
+      font-size: 18px;
+    }
+
+    label {
+      display: block;
+      margin: 0 0 8px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    input, textarea, button {
+      width: 100%;
+      border-radius: 14px;
+      font: inherit;
+    }
+
+    input, textarea {
+      border: 1px solid var(--line);
+      padding: 12px 14px;
+      margin-bottom: 12px;
+      background: #fff;
+      color: var(--ink);
+    }
+
+    textarea {
+      min-height: 180px;
+      resize: vertical;
+      font-family: Consolas, monospace;
+      font-size: 13px;
+    }
+
+    button {
+      border: 0;
+      padding: 12px 14px;
+      background: var(--accent);
+      color: #fff;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 160ms ease, transform 160ms ease;
+    }
+
+    button:hover {
+      background: var(--accent-strong);
+      transform: translateY(-1px);
+    }
+
+    button.secondary {
+      background: #ece1d4;
+      color: var(--ink);
+    }
+
+    button.secondary:hover {
+      background: #e0d4c4;
+    }
+
+    .stack {
+      display: grid;
+      gap: 10px;
+    }
+
+    .badge {
+      display: inline-flex;
+      width: fit-content;
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: #efe3d6;
+      color: var(--accent-strong);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+    }
+
+    .mono {
+      font-family: Consolas, monospace;
+      font-size: 13px;
+      word-break: break-all;
+      color: var(--muted);
+    }
+
+    .status {
+      padding: 10px 12px;
+      border-radius: 14px;
+      background: #f7f0e7;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .status.ok { color: var(--ok); }
+    .status.warn { color: var(--warn); }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="hero">
+      <span class="badge">Session Sentinel Demo</span>
+      <h1>JWT login, tracked session, real-time revoke.</h1>
+      <p>This sample host lets you issue a JWT, register the active session, call a protected endpoint, and watch the logout SignalR event when the session is revoked.</p>
+    </section>
+
+    <section class="grid">
+      <article class="card">
+        <h2>Login</h2>
+        <div class="stack">
+          <div>
+            <label for="userName">User name</label>
+            <input id="userName" value="demo">
+          </div>
+          <div>
+            <label for="password">Password</label>
+            <input id="password" type="password" value="demo123">
+          </div>
+          <div>
+            <label for="fingerprint">Fingerprint hash</label>
+            <input id="fingerprint" value="browser-demo-fingerprint">
+          </div>
+          <button id="loginButton">Login And Register Session</button>
+          <div id="loginStatus" class="status">No session yet.</div>
+        </div>
+      </article>
+
+      <article class="card">
+        <h2>Session</h2>
+        <div class="stack">
+          <button id="meButton" class="secondary">Call /demo/me</button>
+          <button id="logoutButton">Logout Current Session</button>
+          <div>
+            <label>Access token</label>
+            <div id="tokenPreview" class="mono">None</div>
+          </div>
+          <div>
+            <label>Current session id</label>
+            <div id="sessionPreview" class="mono">None</div>
+          </div>
+          <div id="signalrStatus" class="status">SignalR not connected.</div>
+        </div>
+      </article>
+
+      <article class="card">
+        <h2>Admin Revoke</h2>
+        <div class="stack">
+          <div class="status">Login as <strong>admin</strong> / <strong>admin123</strong> in another tab to revoke a different session.</div>
+          <div>
+            <label for="adminSessionId">Target session id</label>
+            <input id="adminSessionId" placeholder="Paste a session id">
+          </div>
+          <button id="listSessionsButton" class="secondary">List Active Issued Sessions</button>
+          <button id="adminRevokeButton">Admin Revoke Target Session</button>
+        </div>
+      </article>
+
+      <article class="card">
+        <h2>Event Log</h2>
+        <label for="eventLog">Runtime output</label>
+        <textarea id="eventLog" readonly></textarea>
+      </article>
+    </section>
+  </main>
+
+  <script src="/lib/signalr.min.js"></script>
+  <script>
+    const state = {
+      accessToken: null,
+      sessionId: null,
+      hubConnection: null,
+      fingerprintHash: null
+    };
+
+    const eventLog = document.getElementById("eventLog");
+    const loginStatus = document.getElementById("loginStatus");
+    const signalrStatus = document.getElementById("signalrStatus");
+    const tokenPreview = document.getElementById("tokenPreview");
+    const sessionPreview = document.getElementById("sessionPreview");
+
+    function appendLog(message) {
+      const line = `[${new Date().toLocaleTimeString()}] ${message}`;
+      eventLog.value = `${line}\n${eventLog.value}`.trim();
+    }
+
+    function updateSessionView() {
+      tokenPreview.textContent = state.accessToken ?? "None";
+      sessionPreview.textContent = state.sessionId ?? "None";
+    }
+
+    function setStatus(target, message, mode) {
+      target.textContent = message;
+      target.className = `status${mode ? ` ${mode}` : ""}`;
+    }
+
+    async function connectSignalR() {
+      if (!window.signalR) {
+        setStatus(signalrStatus, "SignalR client script could not be loaded.", "warn");
+        appendLog("SignalR client library failed to load.");
+        return;
+      }
+
+      if (state.hubConnection) {
+        await state.hubConnection.stop();
+      }
+
+      state.hubConnection = new signalR.HubConnectionBuilder()
+        .withUrl("/hubs/session-sentinel", {
+          accessTokenFactory: () => state.accessToken ?? ""
+        })
+        .withAutomaticReconnect()
+        .build();
+
+      state.hubConnection.on("LogoutUser", payload => {
+        setStatus(signalrStatus, "LogoutUser event received from SignalR.", "warn");
+        appendLog(`LogoutUser event received for session ${payload.sessionId}. Reason: ${payload.reason}`);
+        state.accessToken = null;
+        state.sessionId = null;
+        state.fingerprintHash = null;
+        updateSessionView();
+      });
+
+      state.hubConnection.onreconnecting(() => {
+        setStatus(signalrStatus, "SignalR reconnecting...", "warn");
+      });
+
+      state.hubConnection.onreconnected(() => {
+        setStatus(signalrStatus, "SignalR reconnected.", "ok");
+      });
+
+      await state.hubConnection.start();
+      setStatus(signalrStatus, "SignalR connected.", "ok");
+      appendLog("SignalR connection started.");
+    }
+
+    async function authorizedFetch(url, method = "GET", body = null) {
+      const response = await fetch(url, {
+        method,
+        headers: {
+          "Authorization": `Bearer ${state.accessToken}`,
+          "Content-Type": "application/json",
+          // Protected requests must match the fingerprint that created the session.
+          "X-Sentinel-Fingerprint": state.fingerprintHash ?? ""
+        },
+        body: body ? JSON.stringify(body) : null
+      });
+
+      const text = await response.text();
+      return {
+        ok: response.ok,
+        status: response.status,
+        text,
+        json: text ? JSON.parse(text) : null
+      };
+    }
+
+    document.getElementById("loginButton").addEventListener("click", async () => {
+      const payload = {
+        userName: document.getElementById("userName").value,
+        password: document.getElementById("password").value,
+        fingerprintHash: document.getElementById("fingerprint").value
+      };
+
+      const response = await fetch("/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        setStatus(loginStatus, "Login failed.", "warn");
+        appendLog(`Login failed with status ${response.status}.`);
+        return;
+      }
+
+      const json = await response.json();
+      state.accessToken = json.accessToken;
+      state.sessionId = json.sessionId;
+      state.fingerprintHash = payload.fingerprintHash;
+      updateSessionView();
+      setStatus(loginStatus, "Login succeeded and session registered.", "ok");
+      appendLog(`Login succeeded. Session ${json.sessionId} created.`);
+      await connectSignalR();
+    });
+
+    document.getElementById("meButton").addEventListener("click", async () => {
+      if (!state.accessToken) {
+        appendLog("Call skipped because there is no access token.");
+        return;
+      }
+
+      const response = await authorizedFetch("/demo/me");
+      appendLog(`/demo/me -> ${response.status} ${response.text}`);
+    });
+
+    document.getElementById("logoutButton").addEventListener("click", async () => {
+      if (!state.accessToken) {
+        appendLog("Logout skipped because there is no access token.");
+        return;
+      }
+
+      const response = await authorizedFetch("/auth/logout", "POST", { reason: "User logout from sample UI" });
+      appendLog(`/auth/logout -> ${response.status} ${response.text}`);
+    });
+
+    document.getElementById("listSessionsButton").addEventListener("click", async () => {
+      if (!state.accessToken) {
+        appendLog("Session listing skipped because there is no access token.");
+        return;
+      }
+
+      const response = await authorizedFetch("/admin/sessions");
+      appendLog(`/admin/sessions -> ${response.status} ${response.text}`);
+    });
+
+    document.getElementById("adminRevokeButton").addEventListener("click", async () => {
+      if (!state.accessToken) {
+        appendLog("Admin revoke skipped because there is no access token.");
+        return;
+      }
+
+      const sessionId = document.getElementById("adminSessionId").value.trim();
+      if (!sessionId) {
+        appendLog("Admin revoke skipped because no target session id was provided.");
+        return;
+      }
+
+      const response = await authorizedFetch(`/admin/revoke/${encodeURIComponent(sessionId)}`, "POST", { reason: "Admin revoke from sample UI" });
+      appendLog(`/admin/revoke/${sessionId} -> ${response.status} ${response.text}`);
+    });
+
+    updateSessionView();
+    appendLog("Sample UI ready.");
+  </script>
+</body>
+</html>
