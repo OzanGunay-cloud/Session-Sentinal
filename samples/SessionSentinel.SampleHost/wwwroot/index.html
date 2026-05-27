@@ -295,9 +295,14 @@
         setStatus(signalrStatus, "SignalR reconnected.", "ok");
       });
 
-      await state.hubConnection.start();
-      setStatus(signalrStatus, "SignalR connected.", "ok");
-      appendLog("SignalR connection started.");
+      try {
+        await state.hubConnection.start();
+        setStatus(signalrStatus, "SignalR connected.", "ok");
+        appendLog("SignalR connection started.");
+      } catch (error) {
+        setStatus(signalrStatus, "SignalR connection failed.", "warn");
+        appendLog(`SignalR connection failed: ${error?.message ?? error}`);
+      }
     }
 
     async function authorizedFetch(url, method = "GET", body = null) {

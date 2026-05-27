@@ -101,7 +101,7 @@ public sealed class SessionSentinelMiddleware
             }
         }
 
-        return string.Equals(path, options.HubRoute, StringComparison.OrdinalIgnoreCase);
+        return context.Request.Path.StartsWithSegments(options.HubRoute, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool TryReadBearerToken(HttpContext context, out string token)
