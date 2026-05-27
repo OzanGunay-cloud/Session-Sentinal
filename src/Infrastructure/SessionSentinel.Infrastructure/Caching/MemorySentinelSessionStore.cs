@@ -54,7 +54,16 @@ public sealed class MemorySentinelSessionStore : ISentinelSessionStore
 
     public Task RevokeAsync(string sessionId, CancellationToken cancellationToken = default)
     {
+        var session = _memoryCache.Get<UserSession>(RedisKeyNames.Session(sessionId));
         _memoryCache.Remove(RedisKeyNames.Session(sessionId));
+
+        if (session is not null &&
+            _memoryCache.TryGetValue(RedisKeyNames.UserLatestSession(session.UserId), out string? latestSessionId) &&
+            string.Equals(latestSessionId, sessionId, StringComparison.Ordinal))
+        {
+            _memoryCache.Remove(RedisKeyNames.UserLatestSession(session.UserId));
+        }
+
         return Task.CompletedTask;
     }
 }
