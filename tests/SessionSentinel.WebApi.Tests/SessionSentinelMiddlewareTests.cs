@@ -129,6 +129,29 @@ public sealed class SessionSentinelMiddlewareTests
     }
 
     [Fact]
+    public async Task Middleware_skips_hub_subpaths_even_when_authenticated()
+    {
+        var nextCalled = false;
+        var middleware = new SessionSentinelMiddleware(_ =>
+        {
+            nextCalled = true;
+            return Task.CompletedTask;
+        }, NullLogger<SessionSentinelMiddleware>.Instance);
+
+        var context = CreateAuthenticatedContext(includeFingerprint: false);
+        context.Request.Path = "/hubs/session-sentinel/negotiate";
+
+        await middleware.InvokeAsync(
+            context,
+            new FakeSender(AnalyzeRequestResult.Deny("should not run", 100)),
+            new Sha256TokenHasher(),
+            new DefaultUserIdentityAccessor(),
+            Options.Create(new SessionSentinelOptions()));
+
+        Assert.True(nextCalled);
+    }
+
+    [Fact]
     public void AddSessionSentinel_validates_invalid_options_on_resolution()
     {
         var services = new ServiceCollection();

@@ -1,4 +1,5 @@
 using System.Text;
+using System.Security.Claims;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using SessionSentinel.Application.Abstractions;
@@ -32,7 +33,23 @@ builder.Services
             ValidIssuer = jwtOptions.Issuer,
             ValidAudience = jwtOptions.Audience,
             IssuerSigningKey = signingKey,
+            NameClaimType = "unique_name",
             ClockSkew = TimeSpan.Zero
+        };
+
+        options.Events = new JwtBearerEvents
+        {
+            OnMessageReceived = context =>
+            {
+                var accessToken = context.Request.Query["access_token"];
+                if (!string.IsNullOrWhiteSpace(accessToken) &&
+                    context.HttpContext.Request.Path.StartsWithSegments("/hubs/session-sentinel"))
+                {
+                    context.Token = accessToken;
+                }
+
+                return Task.CompletedTask;
+            }
         };
     });
 
@@ -120,7 +137,7 @@ app.MapGet(
     "/admin/sessions",
     (HttpContext context, SampleIssuedSessionStore issuedSessionStore) =>
     {
-        if (!string.Equals(context.User.FindFirst("unique_name")?.Value, "admin", StringComparison.OrdinalIgnoreCase))
+        if (!IsAdminUser(context.User))
         {
             return Results.Forbid();
         }
@@ -139,7 +156,7 @@ app.MapPost(
         ITokenHasher tokenHasher,
         CancellationToken cancellationToken) =>
     {
-        if (!string.Equals(context.User.FindFirst("unique_name")?.Value, "admin", StringComparison.OrdinalIgnoreCase))
+        if (!IsAdminUser(context.User))
         {
             return Results.Forbid();
         }
@@ -166,3 +183,8 @@ app.MapPost(
 app.MapSessionSentinelHub();
 
 app.Run();
+
+static bool IsAdminUser(ClaimsPrincipal user) =>
+    string.Equals(user.Identity?.Name, "admin", StringComparison.OrdinalIgnoreCase) ||
+    string.Equals(user.FindFirst("unique_name")?.Value, "admin", StringComparison.OrdinalIgnoreCase) ||
+    string.Equals(user.FindFirst(ClaimTypes.Name)?.Value, "admin", StringComparison.OrdinalIgnoreCase);
