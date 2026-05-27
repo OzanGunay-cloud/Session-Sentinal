@@ -11,6 +11,7 @@ Session-Sentinel is a pluggable `net8.0` middleware library for .NET APIs that s
 - SignalR logout notifications
 - EF Core persistence for anomaly audit logs
 - Background-queued anomaly logging for SQL persistence
+- New-session baseline checks against the user's latest active session
 
 ## Integration
 
@@ -56,6 +57,8 @@ The sample host now exposes:
 - `GET /demo/me` as an authenticated endpoint protected by JWT + Session-Sentinel
 - `GET /admin/sessions` and `POST /admin/revoke/{sessionId}` for sample admin-driven revoke
 
+When a request arrives with a new session id, Session-Sentinel compares it against the user's latest active session before allowing it to become the new baseline. High-risk new sessions are denied and blacklisted without revoking the user's current active session.
+
 Sample credentials:
 
 - `demo` / `demo123`
@@ -64,6 +67,8 @@ Sample credentials:
 ## Sample Host
 
 `samples/SessionSentinel.SampleHost` contains a minimal ASP.NET Core host that exercises session creation and protected requests without needing a full identity provider.
+
+The sample login endpoint is wired through a dedicated `ISampleAuthService`, so token issuance, session registration, and issued-session tracking live outside of `Program.cs`.
 
 It also serves a browser demo at `/` that can:
 

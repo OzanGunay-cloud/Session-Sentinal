@@ -48,6 +48,21 @@ public sealed class RedisSentinelSessionStore : ISentinelSessionStore
         return Task.CompletedTask;
     }
 
-    public Task RevokeAsync(string sessionId, CancellationToken cancellationToken = default) =>
-        _database.KeyDeleteAsync(RedisKeyNames.Session(sessionId));
+    public async Task RevokeAsync(string sessionId, CancellationToken cancellationToken = default)
+    {
+        var session = await GetSessionAsync(sessionId, cancellationToken);
+        await _database.KeyDeleteAsync(RedisKeyNames.Session(sessionId));
+
+        if (session is null)
+        {
+            return;
+        }
+
+        var latestSessionKey = RedisKeyNames.UserLatestSession(session.UserId);
+        var latestSessionId = await _database.StringGetAsync(latestSessionKey);
+        if (!latestSessionId.IsNullOrEmpty && string.Equals(latestSessionId!, sessionId, StringComparison.Ordinal))
+        {
+            await _database.KeyDeleteAsync(latestSessionKey);
+        }
+    }
 }

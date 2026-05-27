@@ -105,6 +105,68 @@ public sealed class AnalyzeRequestQueryHandlerTests
         Assert.Equal(0, result.RiskScore);
     }
 
+    [Fact]
+    public async Task Handle_uses_latest_active_session_as_baseline_for_new_session()
+    {
+        var sessionStore = new FakeSessionStore();
+        await sessionStore.UpsertAsync(
+            new UserSession
+            {
+                SessionId = "session-previous",
+                UserId = "user-1",
+                IpAddress = "1.1.1.1",
+                FingerprintHash = "fingerprint",
+                LastRequestAtUtc = DateTime.UtcNow.AddMinutes(-5),
+                IsActive = true
+            },
+            TimeSpan.FromMinutes(5));
+
+        var handler = CreateHandler(sessionStore: sessionStore);
+        var result = await handler.Handle(CreateRequest(sessionId: "session-2"), CancellationToken.None);
+
+        Assert.True(result.IsAllowed);
+        Assert.Equal(0, result.RiskScore);
+        Assert.NotNull(await sessionStore.GetSessionAsync("session-2"));
+    }
+
+    [Fact]
+    public async Task Handle_denies_new_session_when_latest_active_session_exceeds_threshold()
+    {
+        var sessionStore = new FakeSessionStore();
+        await sessionStore.UpsertAsync(
+            new UserSession
+            {
+                SessionId = "session-previous",
+                UserId = "user-1",
+                IpAddress = "1.1.1.1",
+                FingerprintHash = "old-fingerprint",
+                LastRequestAtUtc = DateTime.UtcNow.AddMinutes(-5),
+                IsActive = true
+            },
+            TimeSpan.FromMinutes(5));
+
+        var blacklist = new FakeTokenBlacklistService();
+        var notifications = new FakeNotificationService();
+        var anomalyWriter = new FakeAnomalyLogWriter();
+        var handler = CreateHandler(
+            sessionStore: sessionStore,
+            tokenBlacklistService: blacklist,
+            anomalyLogWriter: anomalyWriter,
+            notificationService: notifications,
+            options: new SessionSentinelOptions { RiskThreshold = 50, TrackImpossibleTravel = false });
+
+        var result = await handler.Handle(
+            CreateRequest(sessionId: "session-2", fingerprintHash: "new-fingerprint"),
+            CancellationToken.None);
+
+        Assert.False(result.IsAllowed);
+        Assert.Contains("token-hash", blacklist.BlacklistedTokens);
+        Assert.Single(anomalyWriter.Logs);
+        Assert.Empty(notifications.Notifications);
+        Assert.Null(await sessionStore.GetSessionAsync("session-2"));
+        Assert.NotNull(await sessionStore.GetSessionAsync("session-previous"));
+    }
+
     private static AnalyzeRequestQueryHandler CreateHandler(
         FakeSessionStore? sessionStore = null,
         FakeTokenBlacklistService? tokenBlacklistService = null,
@@ -124,9 +186,9 @@ public sealed class AnalyzeRequestQueryHandlerTests
             NullLogger<AnalyzeRequestQueryHandler>.Instance);
     }
 
-    private static AnalyzeRequestQuery CreateRequest(string fingerprintHash = "fingerprint") =>
+    private static AnalyzeRequestQuery CreateRequest(string sessionId = "session-1", string fingerprintHash = "fingerprint") =>
         new(
-            "session-1",
+            sessionId,
             "user-1",
             "token-hash",
             DateTimeOffset.UtcNow.AddHours(1),
@@ -139,6 +201,7 @@ public sealed class AnalyzeRequestQueryHandlerTests
     private sealed class FakeSessionStore : ISentinelSessionStore
     {
         private readonly Dictionary<string, UserSession> _sessions = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, string> _latestSessionIds = new(StringComparer.Ordinal);
 
         public Task<UserSession?> GetSessionAsync(string sessionId, CancellationToken cancellationToken = default)
         {
@@ -146,15 +209,33 @@ public sealed class AnalyzeRequestQueryHandlerTests
             return Task.FromResult(session);
         }
 
+        public Task<UserSession?> GetLatestActiveSessionForUserAsync(string userId, CancellationToken cancellationToken = default)
+        {
+            if (!_latestSessionIds.TryGetValue(userId, out var sessionId))
+            {
+                return Task.FromResult<UserSession?>(null);
+            }
+
+            _sessions.TryGetValue(sessionId, out var session);
+            return Task.FromResult(session is { IsActive: true } ? session : null);
+        }
+
         public Task UpsertAsync(UserSession session, TimeSpan ttl, CancellationToken cancellationToken = default)
         {
             _sessions[session.SessionId] = session;
+            _latestSessionIds[session.UserId] = session.SessionId;
             return Task.CompletedTask;
         }
 
         public Task RevokeAsync(string sessionId, CancellationToken cancellationToken = default)
         {
-            _sessions.Remove(sessionId);
+            if (_sessions.Remove(sessionId, out var session) &&
+                _latestSessionIds.TryGetValue(session.UserId, out var latestSessionId) &&
+                string.Equals(latestSessionId, sessionId, StringComparison.Ordinal))
+            {
+                _latestSessionIds.Remove(session.UserId);
+            }
+
             return Task.CompletedTask;
         }
     }
