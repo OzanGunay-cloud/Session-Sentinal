@@ -161,6 +161,60 @@
 
     .status.ok { color: var(--ok); }
     .status.warn { color: var(--warn); }
+
+    .session-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .session-item {
+      display: grid;
+      gap: 10px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: #fff;
+    }
+
+    .session-item-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .session-item-title {
+      font-weight: 700;
+      font-size: 14px;
+    }
+
+    .session-item-badge {
+      padding: 4px 8px;
+      border-radius: 999px;
+      background: #efe3d6;
+      color: var(--accent-strong);
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .session-item-meta {
+      display: grid;
+      gap: 6px;
+      font-family: Consolas, monospace;
+      font-size: 12px;
+      color: var(--muted);
+      word-break: break-all;
+    }
+
+    .session-item-actions {
+      display: flex;
+      gap: 8px;
+    }
+
+    .session-item-actions button {
+      width: auto;
+      flex: 1;
+    }
   </style>
 </head>
 <body>
@@ -214,11 +268,13 @@
         <div class="stack">
           <div class="status">Login as <strong>admin</strong> / <strong>admin123</strong> in another tab to revoke a different session.</div>
           <div>
-            <label for="adminSessionId">Target session id</label>
+            <label for="adminSessionId">Selected or manual session id</label>
             <input id="adminSessionId" placeholder="Paste a session id">
           </div>
           <button id="listSessionsButton" class="secondary">List Active Issued Sessions</button>
           <button id="adminRevokeButton">Admin Revoke Target Session</button>
+          <div id="adminStatus" class="status">Admin session required to review active sessions.</div>
+          <div id="sessionsList" class="session-list"></div>
         </div>
       </article>
 
@@ -244,6 +300,9 @@
     const signalrStatus = document.getElementById("signalrStatus");
     const tokenPreview = document.getElementById("tokenPreview");
     const sessionPreview = document.getElementById("sessionPreview");
+    const adminStatus = document.getElementById("adminStatus");
+    const sessionsList = document.getElementById("sessionsList");
+    const adminSessionIdInput = document.getElementById("adminSessionId");
 
     function appendLog(message) {
       const line = `[${new Date().toLocaleTimeString()}] ${message}`;
@@ -258,6 +317,138 @@
     function setStatus(target, message, mode) {
       target.textContent = message;
       target.className = `status${mode ? ` ${mode}` : ""}`;
+    }
+
+    function formatDate(value) {
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+    }
+
+    function clearAdminSessions(message = "Admin session required to review active sessions.") {
+      adminSessionIdInput.value = "";
+      sessionsList.replaceChildren();
+      setStatus(adminStatus, message, "");
+    }
+
+    function renderAdminSessions(sessions) {
+      sessionsList.replaceChildren();
+
+      if (!sessions.length) {
+        setStatus(adminStatus, "No active issued sessions were returned.", "");
+        return;
+      }
+
+      setStatus(adminStatus, `${sessions.length} active issued session(s) loaded.`, "ok");
+
+      for (const session of sessions) {
+        const card = document.createElement("article");
+        card.className = "session-item";
+
+        const header = document.createElement("div");
+        header.className = "session-item-header";
+
+        const title = document.createElement("div");
+        title.className = "session-item-title";
+        title.textContent = session.userName;
+        header.appendChild(title);
+
+        if (session.sessionId === state.sessionId) {
+          const badge = document.createElement("span");
+          badge.className = "session-item-badge";
+          badge.textContent = "Current tab";
+          header.appendChild(badge);
+        }
+
+        const meta = document.createElement("div");
+        meta.className = "session-item-meta";
+
+        const sessionLine = document.createElement("div");
+        sessionLine.textContent = `Session: ${session.sessionId}`;
+        meta.appendChild(sessionLine);
+
+        const userLine = document.createElement("div");
+        userLine.textContent = `User Id: ${session.userId}`;
+        meta.appendChild(userLine);
+
+        const expiryLine = document.createElement("div");
+        expiryLine.textContent = `Expires: ${formatDate(session.expiresAtUtc)}`;
+        meta.appendChild(expiryLine);
+
+        const actions = document.createElement("div");
+        actions.className = "session-item-actions";
+
+        const selectButton = document.createElement("button");
+        selectButton.type = "button";
+        selectButton.className = "secondary";
+        selectButton.textContent = "Use Session Id";
+        selectButton.addEventListener("click", () => {
+          adminSessionIdInput.value = session.sessionId;
+          setStatus(adminStatus, `Selected session ${session.sessionId}.`, "ok");
+        });
+
+        const revokeButton = document.createElement("button");
+        revokeButton.type = "button";
+        revokeButton.textContent = "Revoke This Session";
+        revokeButton.addEventListener("click", async () => {
+          adminSessionIdInput.value = session.sessionId;
+          await revokeAdminSession(session.sessionId);
+        });
+
+        actions.appendChild(selectButton);
+        actions.appendChild(revokeButton);
+
+        card.appendChild(header);
+        card.appendChild(meta);
+        card.appendChild(actions);
+        sessionsList.appendChild(card);
+      }
+    }
+
+    async function loadAdminSessions() {
+      if (!state.accessToken) {
+        appendLog("Session listing skipped because there is no access token.");
+        clearAdminSessions();
+        return;
+      }
+
+      const response = await authorizedFetch("/admin/sessions");
+      appendLog(`/admin/sessions -> ${response.status} ${response.text}`);
+
+      if (!response.ok) {
+        clearAdminSessions(response.status === 403
+          ? "Admin access required to list active sessions."
+          : "Failed to load active issued sessions.");
+        return;
+      }
+
+      renderAdminSessions(Array.isArray(response.json) ? response.json : []);
+    }
+
+    async function revokeAdminSession(sessionId) {
+      if (!state.accessToken) {
+        appendLog("Admin revoke skipped because there is no access token.");
+        clearAdminSessions();
+        return;
+      }
+
+      if (!sessionId) {
+        appendLog("Admin revoke skipped because no target session id was provided.");
+        return;
+      }
+
+      const response = await authorizedFetch(
+        `/admin/revoke/${encodeURIComponent(sessionId)}`,
+        "POST",
+        { reason: "Admin revoke from sample UI" });
+
+      appendLog(`/admin/revoke/${sessionId} -> ${response.status} ${response.text}`);
+
+      if (response.ok) {
+        adminSessionIdInput.value = "";
+        await loadAdminSessions();
+      } else if (response.status === 403) {
+        setStatus(adminStatus, "Admin access required to revoke sessions.", "warn");
+      }
     }
 
     async function connectSignalR() {
@@ -285,6 +476,7 @@
         state.sessionId = null;
         state.fingerprintHash = null;
         updateSessionView();
+        clearAdminSessions();
       });
 
       state.hubConnection.onreconnecting(() => {
@@ -350,6 +542,10 @@
       state.sessionId = json.sessionId;
       state.fingerprintHash = payload.fingerprintHash;
       updateSessionView();
+      clearAdminSessions(
+        payload.userName.toLowerCase() === "admin"
+          ? "Admin session active. Load sessions to review or revoke."
+          : "Admin session required to review active sessions.");
       setStatus(loginStatus, "Login succeeded and session registered.", "ok");
       appendLog(`Login succeeded. Session ${json.sessionId} created.`);
       await connectSignalR();
@@ -375,33 +571,14 @@
       appendLog(`/auth/logout -> ${response.status} ${response.text}`);
     });
 
-    document.getElementById("listSessionsButton").addEventListener("click", async () => {
-      if (!state.accessToken) {
-        appendLog("Session listing skipped because there is no access token.");
-        return;
-      }
-
-      const response = await authorizedFetch("/admin/sessions");
-      appendLog(`/admin/sessions -> ${response.status} ${response.text}`);
-    });
+    document.getElementById("listSessionsButton").addEventListener("click", loadAdminSessions);
 
     document.getElementById("adminRevokeButton").addEventListener("click", async () => {
-      if (!state.accessToken) {
-        appendLog("Admin revoke skipped because there is no access token.");
-        return;
-      }
-
-      const sessionId = document.getElementById("adminSessionId").value.trim();
-      if (!sessionId) {
-        appendLog("Admin revoke skipped because no target session id was provided.");
-        return;
-      }
-
-      const response = await authorizedFetch(`/admin/revoke/${encodeURIComponent(sessionId)}`, "POST", { reason: "Admin revoke from sample UI" });
-      appendLog(`/admin/revoke/${sessionId} -> ${response.status} ${response.text}`);
+      await revokeAdminSession(adminSessionIdInput.value.trim());
     });
 
     updateSessionView();
+    clearAdminSessions();
     appendLog("Sample UI ready.");
   </script>
 </body>
