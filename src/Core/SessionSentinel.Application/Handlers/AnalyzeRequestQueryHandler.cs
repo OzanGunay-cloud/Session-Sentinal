@@ -62,8 +62,15 @@ public sealed class AnalyzeRequestQueryHandler : IRequestHandler<AnalyzeRequestQ
 
         var currentLocation = await ResolveLocationAsync(request.IpAddress, cancellationToken);
         var existingSession = await _sessionStore.GetSessionAsync(request.SessionId, cancellationToken);
+        var isNewSession = existingSession is null || !existingSession.IsActive;
+        var baselineSession = existingSession;
 
-        if (existingSession is null || !existingSession.IsActive)
+        if (isNewSession)
+        {
+            baselineSession = await _sessionStore.GetLatestActiveSessionForUserAsync(request.UserId, cancellationToken);
+        }
+
+        if (baselineSession is null || !baselineSession.IsActive)
         {
             // First authenticated request becomes the baseline session snapshot.
             await _sessionStore.UpsertAsync(
@@ -78,54 +85,82 @@ public sealed class AnalyzeRequestQueryHandler : IRequestHandler<AnalyzeRequestQ
         var evaluationResult = _riskScoreCalculator.Evaluate(
             new RiskEvaluationInput(
                 request.IpAddress,
-                existingSession.IpAddress,
+                baselineSession.IpAddress,
                 request.FingerprintHash,
-                existingSession.FingerprintHash,
+                baselineSession.FingerprintHash,
                 currentLocation,
-                existingSession.GetLastKnownLocation(),
+                baselineSession.GetLastKnownLocation(),
                 request.RequestedAtUtc,
-                existingSession.LastRequestAtUtc,
+                baselineSession.LastRequestAtUtc,
                 _options.ImpossibleTravelSpeedThresholdKph));
 
         if (evaluationResult.Score >= _options.RiskThreshold)
         {
-            // High-risk requests are revoked immediately and logged asynchronously.
+            // High-risk requests are blacklisted immediately and logged asynchronously.
             await _tokenBlacklistService.BlacklistAsync(
                 request.TokenHash,
                 request.TokenExpiresAtUtc,
                 _options.FallbackBlacklistTtl,
                 cancellationToken);
 
-            existingSession.Revoke(request.RequestedAtUtc);
-            await _sessionStore.RevokeAsync(request.SessionId, cancellationToken);
-
-            await _notificationService.NotifySessionRevokedAsync(
-                new SessionRevocationNotification(request.UserId, request.SessionId, "Risk threshold exceeded."),
-                cancellationToken);
-
             await _anomalyLogWriter.WriteAsync(
                 CreateAnomalyLog(request, evaluationResult),
                 cancellationToken);
 
-            _logger.LogWarning(
-                "SessionSentinel revoked session {SessionId} for user {UserId}. RiskScore={RiskScore}, Rules={Rules}.",
-                request.SessionId,
-                request.UserId,
-                evaluationResult.Score,
-                string.Join(',', evaluationResult.TriggeredRules));
+            if (!isNewSession)
+            {
+                baselineSession.Revoke(request.RequestedAtUtc);
+                await _sessionStore.RevokeAsync(request.SessionId, cancellationToken);
+
+                await _notificationService.NotifySessionRevokedAsync(
+                    new SessionRevocationNotification(request.UserId, request.SessionId, "Risk threshold exceeded."),
+                    cancellationToken);
+
+                _logger.LogWarning(
+                    "SessionSentinel revoked session {SessionId} for user {UserId}. RiskScore={RiskScore}, Rules={Rules}.",
+                    request.SessionId,
+                    request.UserId,
+                    evaluationResult.Score,
+                    string.Join(',', evaluationResult.TriggeredRules));
+            }
+            else
+            {
+                _logger.LogWarning(
+                    "SessionSentinel denied new session {SessionId} for user {UserId}. RiskScore={RiskScore}, Rules={Rules}.",
+                    request.SessionId,
+                    request.UserId,
+                    evaluationResult.Score,
+                    string.Join(',', evaluationResult.TriggeredRules));
+            }
+
             return AnalyzeRequestResult.Deny("Risk threshold exceeded.", evaluationResult.Score, evaluationResult.TriggeredRules);
         }
 
-        existingSession.UpdateLastSeen(
-            request.IpAddress,
-            request.FingerprintHash,
-            request.UserAgent,
-            request.Language,
-            currentLocation,
-            request.RequestedAtUtc);
+        if (isNewSession)
+        {
+            await _sessionStore.UpsertAsync(
+                CreateSession(request, currentLocation),
+                _options.ActiveSessionTtl,
+                cancellationToken);
 
-        await _sessionStore.UpsertAsync(existingSession, _options.ActiveSessionTtl, cancellationToken);
-        _logger.LogDebug("SessionSentinel refreshed session {SessionId} for user {UserId}.", request.SessionId, request.UserId);
+            _logger.LogInformation(
+                "SessionSentinel created a new active session snapshot for user {UserId} using the latest active session as baseline.",
+                request.UserId);
+        }
+        else
+        {
+            baselineSession.UpdateLastSeen(
+                request.IpAddress,
+                request.FingerprintHash,
+                request.UserAgent,
+                request.Language,
+                currentLocation,
+                request.RequestedAtUtc);
+
+            await _sessionStore.UpsertAsync(baselineSession, _options.ActiveSessionTtl, cancellationToken);
+            _logger.LogDebug("SessionSentinel refreshed session {SessionId} for user {UserId}.", request.SessionId, request.UserId);
+        }
+
         return AnalyzeRequestResult.Allow(evaluationResult.Score, evaluationResult.TriggeredRules);
     }
 

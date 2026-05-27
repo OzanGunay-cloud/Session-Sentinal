@@ -40,6 +40,7 @@ builder.Services.AddAuthorization();
 builder.Services.AddSingleton<SampleUserStore>();
 builder.Services.AddSingleton<SampleJwtTokenService>();
 builder.Services.AddSingleton<SampleIssuedSessionStore>();
+builder.Services.AddScoped<ISampleAuthService, SampleAuthService>();
 builder.Services.AddSessionSentinel(options =>
 {
     options.UseRedis = false;
@@ -61,42 +62,19 @@ app.MapPost(
     async (
         HttpContext context,
         SampleLoginRequest request,
-        SampleUserStore userStore,
-        SampleJwtTokenService tokenService,
-        SampleIssuedSessionStore issuedSessionStore,
-        ISessionRegistrationService sessionRegistrationService,
+        ISampleAuthService authService,
         CancellationToken cancellationToken) =>
     {
-        var user = userStore.Validate(request.UserName, request.Password);
-        if (user is null)
-        {
-            return Results.Unauthorized();
-        }
-
-        var token = tokenService.CreateToken(user);
-
-        // Session registration is done at login so protected requests already have a baseline snapshot.
-        await sessionRegistrationService.RegisterAsync(
-            new RegisterSessionRequest(
-                token.SessionId,
-                user.UserId,
-                context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
-                request.FingerprintHash,
+        var token = await authService.LoginAsync(
+            request,
+            new SampleLoginContext(
+                ClientIpResolver.Resolve(context),
                 context.Request.Headers["User-Agent"].ToString(),
                 context.Request.Headers["Accept-Language"].ToString(),
-                null,
                 DateTime.UtcNow),
             cancellationToken);
 
-        issuedSessionStore.Store(
-            new IssuedSessionRecord(
-                token.SessionId,
-                user.UserId,
-                user.UserName,
-                token.AccessToken,
-                token.ExpiresAtUtc));
-
-        return Results.Ok(token);
+        return token is null ? Results.Unauthorized() : Results.Ok(token);
     });
 
 app.MapGet("/demo/ping", () => Results.Ok(new { Message = "Session Sentinel sample host is running." }));
